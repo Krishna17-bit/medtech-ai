@@ -8,28 +8,24 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from groq import Groq
+from typing import Optional
 
 # ================================
 # Load environment variables
 # ================================
 load_dotenv()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-if not GROQ_API_KEY or not RUNWAY_API_KEY:
-    raise RuntimeError("❌ API keys not set in environment")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+VEO_API_KEY = os.getenv("VEO_API_KEY")
+
+# Optional: warn but don’t block if running locally
+if not GEMINI_API_KEY or not VEO_API_KEY:
+    print("⚠️  GEMINI_API_KEY or VEO_API_KEY not set — please supply via frontend or .env")
 
 # ================================
-# Clients
-# ================================
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-# ================================
-# FastAPI app
+# FastAPI app setup
 # ================================
 app = FastAPI(title="MedTech Animated Content Generator API")
 
-# Enable CORS (frontend served here too, but keep open for demo)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -42,136 +38,159 @@ app.add_middleware(
 temp_dir = tempfile.gettempdir()
 app.mount("/videos", StaticFiles(directory=temp_dir), name="videos")
 
-
 # ================================
-# Request Schema
+# Request schema
 # ================================
 class RequestData(BaseModel):
     device_name: str
     purpose: str
     language: str = "en"
+    gemini_api_key: Optional[str] = None
+    veo_api_key: Optional[str] = None
 
 
 # ================================
 # STEP 1: Research (stub)
 # ================================
 def fetch_research(device_name: str) -> str:
-    return f"Research summary for {device_name}: invented in the 20th century, FDA-cleared, and widely used globally."
+    return (
+        f"Research summary for {device_name}: invented in the 20th century, "
+        f"FDA-cleared, and widely used globally."
+    )
 
 
 # ================================
-# STEP 2: Script Generation (Groq)
+# STEP 2: Gemini Script Generation
 # ================================
-def generate_script(device_name: str, purpose: str, research: str, language: str) -> str:
+def generate_script(device_name: str, purpose: str, research: str, language: str, gemini_key: str) -> str:
     prompt = f"""
-    Write a story-style narration for a {purpose}-focused explainer about the medical device: {device_name}.
+Write a story-style narration for a {purpose}-focused explainer about the medical device: {device_name}.
 
-    Guidelines:
-    - Start directly with the device, not greetings.
-    - Use a storytelling/documentary tone.
-    - Cover:
-      * Where and when it was invented
-      * How it was invented
-      * Surprising facts
-      * Where it is used today
-      * Technical explanation (how it works, how to use step by step)
-      * Benefits and outcomes
-      * Safety considerations
-    - Flow like a story, not like an essay.
-    - Language: {language}
-    - Length: ~60–90 seconds narration.
+Guidelines:
+- Start directly with the device, not greetings.
+- Use a storytelling/documentary tone.
+- Cover:
+  * Where and when it was invented
+  * How it was invented
+  * Surprising facts
+  * Where it is used today
+  * Technical explanation (how it works, how to use step by step)
+  * Benefits and outcomes
+  * Safety considerations
+- Flow like a story, not like an essay.
+- Language: {language}
+Length: ~60–90 seconds narration.
 
-    Research summary:
-    {research}
-    """
-
-    try:
-        response = groq_client.chat.completions.create(
-            model="gemma2-9b-it",   # ✅ stable Groq model
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.5,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Groq Error: {e}")
-
-
-# ================================
-# STEP 3: Compliance Validation (lenient)
-# ================================
-def validate_compliance(script: str, research: str) -> bool:
-    prompt = f"""
-    Compare this script with the research summary.
-    Respond ONLY 'YES' if compliant, 'NO' if unsupported claims.
-    If unsure, respond 'YES'.
-    Research:
-    {research}
-
-    Script:
-    {script}
-    """
-    try:
-        response = groq_client.chat.completions.create(
-            model="gemma2-9b-it",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0,
-        )
-        answer = response.choices[0].message.content.strip().lower()
-        return "yes" in answer
-    except Exception:
-        return True  # ✅ default allow
-
-
-# ================================
-# STEP 4: Runway API for video
-# ================================
-def generate_animated_video(device_name: str, script: str, purpose: str) -> str:
-    runway_url = "https://api.dev.runwayml.com/v1/tasks"
+Research summary:
+{research}
+"""
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent"
     headers = {
-        "Authorization": f"Bearer {RUNWAY_API_KEY}",
         "Content-Type": "application/json",
-        "X-Runway-Version": "2024-11-06",
+        "Authorization": f"Bearer {gemini_key}",
     }
-    payload = {
-        "model": "gen3a_turbo",
-        "input": {
-            "prompt": f"Short, cinematic, reel-style explainer video about {device_name}. "
-                      f"Purpose: {purpose}. "
-                      f"Include visuals matching narration: {script[:400]}",
-            "duration": 10,
-            "resolution": "720p"
-        }
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}]
     }
 
     try:
-        # Step 1: create task
-        r = requests.post(runway_url, headers=headers, json=payload)
+        r = requests.post(url, headers=headers, json=body, timeout=60)
         if r.status_code != 200:
-            raise Exception(f"Runway API Error: {r.status_code}: {r.text}")
-
-        job = r.json()
-        job_id = job.get("id")
-        if not job_id:
-            raise Exception(f"Runway Error: no job id in response: {job}")
-
-        # Step 2: poll until finished
-        status_url = f"{runway_url}/{job_id}"
-        for _ in range(30):  # up to ~90 sec
-            time.sleep(3)
-            check = requests.get(status_url, headers=headers)
-            if check.status_code != 200:
-                raise Exception(f"Runway Poll Error: {check.text}")
-            data = check.json()
-            if data.get("status") == "SUCCEEDED":
-                return data["output"][0]["url"]
-            elif data.get("status") in ["FAILED", "CANCELED"]:
-                raise Exception(f"Runway generation failed: {data}")
-
-        raise Exception("Runway video generation timed out")
+            raise HTTPException(status_code=500, detail=f"Gemini API error: {r.status_code} {r.text}")
+        data = r.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        print(f"⚠️ Runway failed, using dummy video: {e}")
-        # ✅ fallback demo video
-        return "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
+        raise HTTPException(status_code=500, detail=f"Gemini script generation failed: {str(e)}")
+
+
+# ================================
+# STEP 3: Compliance Validation
+# ================================
+def validate_compliance(script: str, research: str, gemini_key: str) -> bool:
+    prompt = f"""
+Compare this script with the research summary.
+Respond ONLY with 'YES' if compliant, 'NO' if unsupported claims.
+If unsure, respond 'YES'.
+
+Research:
+{research}
+
+Script:
+{script}
+"""
+    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {gemini_key}",
+    }
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+
+    try:
+        r = requests.post(url, headers=headers, json=body, timeout=45)
+        if r.status_code != 200:
+            print(f"⚠️ Compliance check API error: {r.text}")
+            return True
+        data = r.json()
+        result = data["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+        return "yes" in result
+    except Exception as e:
+        print(f"⚠️ Compliance validation failed: {e}")
+        return True
+
+
+# ================================
+# STEP 4: Veo 3 Video Generation
+# ================================
+def generate_animated_video(device_name: str, script: str, purpose: str, veo_key: str) -> str:
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "YOUR_PROJECT_ID")
+    location = "us-central1"
+    model_id = "veo-3.0-generate-001"
+    url = f"https://{location}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_id}:predictLongRunning"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {veo_key}",
+    }
+
+    prompt = (
+        f"Short cinematic explainer video about {device_name}. Purpose: {purpose}. "
+        f"Incorporate narration: {script[:400]}"
+    )
+    body = {
+        "instances": [{"prompt": prompt}],
+        "parameters": {
+            "aspectRatio": "16:9",
+            "resolution": "720p",
+            "duration": "20s",
+        },
+    }
+
+    # Kick off generation
+    r = requests.post(url, headers=headers, json=body, timeout=60)
+    if r.status_code != 200:
+        raise HTTPException(status_code=500, detail=f"Veo API init error: {r.status_code} {r.text}")
+
+    resp = r.json()
+    operation_name = resp.get("name")
+    if not operation_name:
+        raise HTTPException(status_code=500, detail=f"Veo API error: no operation name returned")
+
+    # Poll for completion
+    status_url = f"https://{location}-aiplatform.googleapis.com/v1/{operation_name}"
+    for _ in range(60):
+        time.sleep(5)
+        r2 = requests.get(status_url, headers=headers)
+        if r2.status_code != 200:
+            raise HTTPException(status_code=500, detail=f"Veo poll error: {r2.status_code} {r2.text}")
+        data = r2.json()
+        if data.get("done"):
+            videos = data.get("response", {}).get("generatedVideos", [])
+            if videos and "video" in videos[0]:
+                return videos[0]["video"]
+            raise HTTPException(status_code=500, detail=f"Veo completed but no video link found: {data}")
+    raise HTTPException(status_code=500, detail="Veo video generation timed out")
 
 
 # ================================
@@ -179,29 +198,26 @@ def generate_animated_video(device_name: str, script: str, purpose: str) -> str:
 # ================================
 @app.post("/generate")
 def generate_content(data: RequestData):
+    gemini_key = data.gemini_api_key or GEMINI_API_KEY
+    veo_key = data.veo_api_key or VEO_API_KEY
+
     research = fetch_research(data.device_name)
-
-    # Script
-    script = generate_script(data.device_name, data.purpose, research, data.language)
-
-    # Compliance
-    is_compliant = validate_compliance(script, research)
-
-    # Video (safe fallback inside function)
-    video_url = generate_animated_video(data.device_name, script, data.purpose)
+    script = generate_script(data.device_name, data.purpose, research, data.language, gemini_key)
+    compliance = validate_compliance(script, research, gemini_key)
+    video_url = generate_animated_video(data.device_name, script, data.purpose, veo_key)
 
     return {
         "device": data.device_name,
         "purpose": data.purpose,
         "script": script,
-        "compliance_passed": is_compliant,
+        "compliance_passed": compliance,
         "research_used": research,
         "video_url": video_url,
     }
 
 
 # ================================
-# Serve frontend build
+# Serve frontend (if built)
 # ================================
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(frontend_path):

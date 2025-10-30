@@ -210,3 +210,4 @@ if os.path.isdir(frontend_path):
     @app.get("/")
     def serve_index():
         return FileResponse(os.path.join(frontend_path, "index.html"))
+ECHO is on.

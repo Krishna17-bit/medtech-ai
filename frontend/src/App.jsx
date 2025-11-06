@@ -7,7 +7,7 @@ function App() {
   const [purpose, setPurpose] = useState("training");
   const [language, setLanguage] = useState("en");
   const [geminiKey, setGeminiKey] = useState("");
-  const [veoKey, setVeoKey] = useState("");
+  const [runwayKey, setRunwayKey] = useState("");
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -28,8 +28,10 @@ Language: ${language.toUpperCase()}
   // Handle generation
   const handleGenerate = async () => {
     if (!deviceName) return alert("Please enter a device name");
-    if (!geminiKey || !veoKey)
-      return alert("Please enter both Gemini and Veo API keys");
+    if (!geminiKey)
+      return alert("Please enter Gemini API key");
+    if (!runwayKey)
+      return alert("Please enter Runway API key");
 
     const promptText = prompt || generatePrompt();
     setPrompt(promptText);
@@ -42,7 +44,7 @@ Language: ${language.toUpperCase()}
         purpose,
         language,
         gemini_api_key: geminiKey,
-        veo_api_key: veoKey,
+        runway_api_key: runwayKey,
       });
 
       setResult(res.data);
@@ -76,7 +78,7 @@ Language: ${language.toUpperCase()}
           <h1>
             <span>Agentic</span> AI Dashboard
           </h1>
-          <div className="badge">Powered by Gemini & Veo</div>
+          <div className="badge">Powered by Gemini & Runway</div>
         </header>
 
         {/* Generator Card */}
@@ -93,9 +95,9 @@ Language: ${language.toUpperCase()}
             />
             <input
               type="password"
-              placeholder="Enter Veo API Key"
-              value={veoKey}
-              onChange={(e) => setVeoKey(e.target.value)}
+              placeholder="Enter Runway API Key"
+              value={runwayKey}
+              onChange={(e) => setRunwayKey(e.target.value)}
             />
           </div>
 

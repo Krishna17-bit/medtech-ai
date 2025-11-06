@@ -1,6 +1,5 @@
 import os
 import tempfile
-import time
 import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -15,16 +14,18 @@ from typing import Optional
 # ================================
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-VEO_API_KEY = os.getenv("VEO_API_KEY")
+RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
 
-# Optional: warn but don’t block if running locally
-if not GEMINI_API_KEY or not VEO_API_KEY:
-    print("⚠️  GEMINI_API_KEY or VEO_API_KEY not set — please supply via frontend or .env")
+if not GEMINI_API_KEY:
+    print("⚠️  GEMINI_API_KEY not set — please supply via .env or frontend.")
+
+if not RUNWAY_API_KEY:
+    print("⚠️  RUNWAY_API_KEY not set — video generation will fail.")
 
 # ================================
 # FastAPI app setup
 # ================================
-app = FastAPI(title="MedTech Animated Content Generator API")
+app = FastAPI(title="MedTech AI Content Generator API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,7 +35,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Serve temp dir for videos
+# ================================
+# Serve temporary directory for assets
+# ================================
 temp_dir = tempfile.gettempdir()
 app.mount("/videos", StaticFiles(directory=temp_dir), name="videos")
 
@@ -46,11 +49,11 @@ class RequestData(BaseModel):
     purpose: str
     language: str = "en"
     gemini_api_key: Optional[str] = None
-    veo_api_key: Optional[str] = None
+    runway_api_key: Optional[str] = None
 
 
 # ================================
-# STEP 1: Research (stub)
+# STEP 1: Research (placeholder)
 # ================================
 def fetch_research(device_name: str) -> str:
     return (
@@ -67,19 +70,18 @@ def generate_script(device_name: str, purpose: str, research: str, language: str
 Write a story-style narration for a {purpose}-focused explainer about the medical device: {device_name}.
 
 Guidelines:
-- Start directly with the device, not greetings.
-- Use a storytelling/documentary tone.
-- Cover:
-  * Where and when it was invented
+- Start directly with the device (no greetings)
+- Storytelling/documentary tone
+- Include:
+  * When and where it was invented
   * How it was invented
   * Surprising facts
   * Where it is used today
-  * Technical explanation (how it works, how to use step by step)
+  * How it works (technical explanation)
   * Benefits and outcomes
   * Safety considerations
-- Flow like a story, not like an essay.
-- Language: {language}
-Length: ~60–90 seconds narration.
+Language: {language}
+Length: about 60–90 seconds of narration.
 
 Research summary:
 {research}
@@ -89,9 +91,7 @@ Research summary:
         "Content-Type": "application/json",
         "Authorization": f"Bearer {gemini_key}",
     }
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
         r = requests.post(url, headers=headers, json=body, timeout=60)
@@ -123,9 +123,7 @@ Script:
         "Content-Type": "application/json",
         "Authorization": f"Bearer {gemini_key}",
     }
-    body = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
+    body = {"contents": [{"parts": [{"text": prompt}]}]}
 
     try:
         r = requests.post(url, headers=headers, json=body, timeout=45)
@@ -141,56 +139,32 @@ Script:
 
 
 # ================================
-# STEP 4: Veo 3 Video Generation
+# STEP 4: RunwayML Video Generation
 # ================================
-def generate_animated_video(device_name: str, script: str, purpose: str, veo_key: str) -> str:
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "YOUR_PROJECT_ID")
-    location = "us-central1"
-    model_id = "veo-3.0-generate-001"
-    url = f"https://{location}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{location}/publishers/google/models/{model_id}:predictLongRunning"
+def generate_video_with_runway(script: str, runway_key: str) -> Optional[str]:
+    try:
+        url = "https://api.runwayml.com/v1/gen2/video"
+        headers = {
+            "Authorization": f"Bearer {runway_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "prompt": script,
+            "model": "gen2",
+            "duration": 10,
+            "ratio": "16:9"
+        }
 
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {veo_key}",
-    }
+        r = requests.post(url, headers=headers, json=body, timeout=60)
+        if r.status_code != 200:
+            print(f"⚠️ Runway video error: {r.text}")
+            return None
 
-    prompt = (
-        f"Short cinematic explainer video about {device_name}. Purpose: {purpose}. "
-        f"Incorporate narration: {script[:400]}"
-    )
-    body = {
-        "instances": [{"prompt": prompt}],
-        "parameters": {
-            "aspectRatio": "16:9",
-            "resolution": "720p",
-            "duration": "20s",
-        },
-    }
-
-    # Kick off generation
-    r = requests.post(url, headers=headers, json=body, timeout=60)
-    if r.status_code != 200:
-        raise HTTPException(status_code=500, detail=f"Veo API init error: {r.status_code} {r.text}")
-
-    resp = r.json()
-    operation_name = resp.get("name")
-    if not operation_name:
-        raise HTTPException(status_code=500, detail=f"Veo API error: no operation name returned")
-
-    # Poll for completion
-    status_url = f"https://{location}-aiplatform.googleapis.com/v1/{operation_name}"
-    for _ in range(60):
-        time.sleep(5)
-        r2 = requests.get(status_url, headers=headers)
-        if r2.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Veo poll error: {r2.status_code} {r2.text}")
-        data = r2.json()
-        if data.get("done"):
-            videos = data.get("response", {}).get("generatedVideos", [])
-            if videos and "video" in videos[0]:
-                return videos[0]["video"]
-            raise HTTPException(status_code=500, detail=f"Veo completed but no video link found: {data}")
-    raise HTTPException(status_code=500, detail="Veo video generation timed out")
+        data = r.json()
+        return data.get("output_url")
+    except Exception as e:
+        print(f"⚠️ Runway video generation failed: {e}")
+        return None
 
 
 # ================================
@@ -199,12 +173,18 @@ def generate_animated_video(device_name: str, script: str, purpose: str, veo_key
 @app.post("/generate")
 def generate_content(data: RequestData):
     gemini_key = data.gemini_api_key or GEMINI_API_KEY
-    veo_key = data.veo_api_key or VEO_API_KEY
+    runway_key = data.runway_api_key or RUNWAY_API_KEY
+
+    if not gemini_key:
+        raise HTTPException(status_code=400, detail="Missing Gemini API key.")
 
     research = fetch_research(data.device_name)
     script = generate_script(data.device_name, data.purpose, research, data.language, gemini_key)
     compliance = validate_compliance(script, research, gemini_key)
-    video_url = generate_animated_video(data.device_name, script, data.purpose, veo_key)
+
+    video_url = None
+    if runway_key:
+        video_url = generate_video_with_runway(script, runway_key)
 
     return {
         "device": data.device_name,
@@ -217,7 +197,7 @@ def generate_content(data: RequestData):
 
 
 # ================================
-# Serve frontend (if built)
+# Serve frontend (if exists)
 # ================================
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(frontend_path):

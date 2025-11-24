@@ -9,12 +9,12 @@ services:
       cd ../frontend
       npm install
       npm run build
-      mkdir -p ../backend/frontend/dist
-      cp -r dist/* ../backend/frontend/dist/
 
     startCommand: |
       cd backend
       uvicorn main:app --host 0.0.0.0 --port $PORT
+
+    staticPublishPath: frontend/dist
 
     envVars:
       PYTHON_VERSION: 3.12.2

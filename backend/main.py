@@ -10,27 +10,28 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from typing import Optional
 
-# =====================================
+
+# =============================================
 # Load environment variables
-# =====================================
+# =============================================
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-GOOGLE_TTS_KEY = os.getenv("GOOGLE_TTS_KEY")
+EDEN_API_KEY = os.getenv("EDEN_API_KEY")  # NEW — EdenAI TTS
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "/usr/bin/ffmpeg")
 
 if not GEMINI_API_KEY:
     print("⚠️ Missing GEMINI_API_KEY")
 if not RUNWAY_API_KEY:
     print("⚠️ Missing RUNWAY_API_KEY")
-if not GOOGLE_TTS_KEY:
-    print("⚠️ Missing GOOGLE_TTS_KEY")
+if not EDEN_API_KEY:
+    print("⚠️ Missing EDEN_API_KEY (Required for TTS)")
 
-# =====================================
+
+# =============================================
 # FastAPI Setup
-# =====================================
+# =============================================
 app = FastAPI(title="MedTech AI Generator API")
 
 app.add_middleware(
@@ -44,25 +45,26 @@ app.add_middleware(
 temp_dir = tempfile.gettempdir()
 app.mount("/videos", StaticFiles(directory=temp_dir), name="videos")
 
-# =====================================
-# Data Model
-# =====================================
+
+# =============================================
+# Input Model
+# =============================================
 class RequestData(BaseModel):
     device_name: str
     purpose: str
     language: str = "en"
 
 
-# =====================================
+# =============================================
 # STEP 1 — Fetch Research
-# =====================================
+# =============================================
 def fetch_research(device_name: str):
     return f"Research summary for {device_name}: widely used and medically approved."
 
 
-# =====================================
-# STEP 2 — Gemini Script
-# =====================================
+# =============================================
+# STEP 2 — Gemini Script Generation
+# =============================================
 def generate_script(device, purpose, research, language, key):
     prompt = f"""
 Write a documentary-style narration for a {purpose}-focused explainer about the medical device {device}.
@@ -89,9 +91,9 @@ Research:
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
-# =====================================
+# =============================================
 # STEP 3 — Compliance Check
-# =====================================
+# =============================================
 def validate_compliance(script, research, key):
     prompt = f"""
 Compare script with research.
@@ -116,9 +118,9 @@ Script:
         return True
 
 
-# =====================================
+# =============================================
 # STEP 4 — Runway GEN-2 Silent Video
-# =====================================
+# =============================================
 def generate_gen2_video(prompt, key):
     url = "https://api.runwayml.com/v1/generate"
 
@@ -139,28 +141,34 @@ def generate_gen2_video(prompt, key):
     if r.status_code != 200:
         raise HTTPException(500, f"Runway Error: {r.text}")
 
-    video_url = r.json()["output"][0]["video"]
-    return video_url
+    return r.json()["output"][0]["video"]
 
 
-# =====================================
-# STEP 5 — Google TTS Audio
-# =====================================
-def generate_audio(script, key):
-    url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={key}"
+# =============================================
+# STEP 5 — EdenAI TTS (MP3)
+# =============================================
+def generate_audio(script, eden_key):
+    url = "https://api.edenai.run/v2/audio/text_to_speech"
 
-    body = {
-        "input": {"text": script},
-        "voice": {"languageCode": "en-US", "name": "en-US-Neural2-D"},
-        "audioConfig": {"audioEncoding": "mp3"}
+    payload = {
+        "providers": "google",  # or "amazon", "microsoft", "ibm"
+        "language": "en-US",
+        "voice": "en-US-Neural2-D",
+        "text": script,
+        "audio_format": "mp3"
     }
 
-    r = requests.post(url, json=body)
-    if r.status_code != 200:
-        raise HTTPException(500, f"Google TTS Error: {r.text}")
+    headers = {
+        "Authorization": f"Bearer {eden_key}"
+    }
 
-    audio_data = r.json()["audioContent"]
-    audio_bytes = base64.b64decode(audio_data)
+    r = requests.post(url, json=payload, headers=headers)
+    if r.status_code != 200:
+        raise HTTPException(500, f"EdenAI TTS Error: {r.text}")
+
+    # Eden AI returns Base64 audio
+    audio_b64 = r.json()["google"]["audio"]
+    audio_bytes = base64.b64decode(audio_b64)
 
     audio_path = os.path.join(temp_dir, f"audio_{uuid.uuid4().hex}.mp3")
     with open(audio_path, "wb") as f:
@@ -169,9 +177,9 @@ def generate_audio(script, key):
     return audio_path
 
 
-# =====================================
-# STEP 6 — Create SRT
-# =====================================
+# =============================================
+# STEP 6 — Subtitle File (SRT)
+# =============================================
 def create_srt(script):
     lines = script.split(". ")
     srt = ""
@@ -179,27 +187,23 @@ def create_srt(script):
 
     for i, line in enumerate(lines):
         start = f"00:00:{current_time:02d},000"
-        end = f"00:00:{current_time+2:02d},000"
+        end = f"00:00:{current_time + 2:02d},000"
         current_time += 2
-
         srt += f"{i+1}\n{start} --> {end}\n{line}\n\n"
 
     path = os.path.join(temp_dir, f"sub_{uuid.uuid4().hex}.srt")
     with open(path, "w") as f:
         f.write(srt)
-
     return path
 
 
-# =====================================
-# STEP 7 — Merge with FFmpeg (Burn Subtitles)
-# =====================================
+# =============================================
+# STEP 7 — Merge Audio + Subtitles + Video
+# =============================================
 def ffmpeg_merge(video_url, audio_path, srt_path):
     raw_video_path = os.path.join(temp_dir, f"vid_{uuid.uuid4().hex}.mp4")
-
-    video_bytes = requests.get(video_url).content
     with open(raw_video_path, "wb") as f:
-        f.write(video_bytes)
+        f.write(requests.get(video_url).content)
 
     final_path = os.path.join(temp_dir, f"final_{uuid.uuid4().hex}.mp4")
 
@@ -218,23 +222,26 @@ def ffmpeg_merge(video_url, audio_path, srt_path):
     return final_path
 
 
-# =====================================
+# =============================================
 # API Route
-# =====================================
+# =============================================
 @app.post("/generate")
 def generate(data: RequestData):
+
+    research = fetch_research(data.device_name)
+
     script = generate_script(
         data.device_name,
         data.purpose,
-        fetch_research(data.device_name),
+        research,
         data.language,
         GEMINI_API_KEY
     )
 
-    compliance = validate_compliance(script, fetch_research(data.device_name), GEMINI_API_KEY)
+    compliance = validate_compliance(script, research, GEMINI_API_KEY)
 
     video_url = generate_gen2_video(script, RUNWAY_API_KEY)
-    audio_path = generate_audio(script, GOOGLE_TTS_KEY)
+    audio_path = generate_audio(script, EDEN_API_KEY)
     srt_path = create_srt(script)
 
     final_video = ffmpeg_merge(video_url, audio_path, srt_path)
@@ -253,9 +260,9 @@ def generate(data: RequestData):
     }
 
 
-# =====================================
-# Optional: Serve Frontend
-# =====================================
+# =============================================
+# Serve Frontend (Optional)
+# =============================================
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

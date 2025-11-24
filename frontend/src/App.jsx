@@ -11,29 +11,35 @@ function App() {
   const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
 
-  // ============= Progress Bar Animation =============
+  // ==================================
+  // Progress Bar Animation
+  // ==================================
   useEffect(() => {
     let interval = null;
 
     if (loading) {
-      setProgress(5); // start at 5%
+      setProgress(5);
 
       interval = setInterval(() => {
         setProgress((old) => {
-          if (old >= 90) return old; // wait for backend
-          return old + Math.floor(Math.random() * 10) + 1;
+          if (old >= 90) return old;
+          return old + Math.floor(Math.random() * 10) + 2;
         });
       }, 700);
     } else {
       setProgress(100);
-      setTimeout(() => setProgress(0), 800);
+      setTimeout(() => setProgress(0), 700);
     }
 
     return () => clearInterval(interval);
   }, [loading]);
 
-  // Generate prompt template
+  // ==================================
+  // Auto-generate prompt
+  // ==================================
   const generatePrompt = () => {
+    if (!deviceName) return "";
+
     return `
 Write a ${purpose}-focused explainer about the medical device: ${deviceName}.
 Include:
@@ -45,20 +51,23 @@ Language: ${language.toUpperCase()}
 `.trim();
   };
 
-  // Handle generation
+  // ==================================
+  // Generate Content
+  // ==================================
   const handleGenerate = async () => {
     if (!deviceName) return alert("Please enter a device name");
 
     const promptText = prompt || generatePrompt();
     setPrompt(promptText);
+
     setLoading(true);
     setResult(null);
 
     try {
-      const res = await axios.post("http://127.0.0.1:8000/generate", {
+      const res = await axios.post("/generate", {
         device_name: deviceName,
         purpose,
-        language
+        language,
       });
 
       setResult(res.data);
@@ -70,7 +79,9 @@ Language: ${language.toUpperCase()}
     }
   };
 
-  // Download generated video
+  // ==================================
+  // Download Final Video (MP4)
+  // ==================================
   const downloadVideo = () => {
     if (!result?.video_url) return;
 
@@ -80,6 +91,9 @@ Language: ${language.toUpperCase()}
     link.click();
   };
 
+  // ==================================
+  // UI
+  // ==================================
   return (
     <div className="app-container">
       {/* Sidebar */}
@@ -96,7 +110,7 @@ Language: ${language.toUpperCase()}
         </nav>
       </aside>
 
-      {/* Main */}
+      {/* Main Screen */}
       <main className="main-content">
         <header className="dashboard-header">
           <h1>
@@ -117,10 +131,7 @@ Language: ${language.toUpperCase()}
               onChange={(e) => setDeviceName(e.target.value)}
             />
 
-            <select
-              value={purpose}
-              onChange={(e) => setPurpose(e.target.value)}
-            >
+            <select value={purpose} onChange={(e) => setPurpose(e.target.value)}>
               <option value="training">Training</option>
               <option value="marketing">Marketing</option>
               <option value="education">Education</option>
@@ -138,7 +149,7 @@ Language: ${language.toUpperCase()}
             </select>
           </div>
 
-          {/* Prompt */}
+          {/* Prompt Box */}
           <div className="prompt-editor">
             <textarea
               placeholder="View or edit the AI prompt here..."
@@ -183,9 +194,7 @@ Language: ${language.toUpperCase()}
                       : "compliance-fail"
                   }
                 >
-                  {result.compliance_passed
-                    ? "Compliant"
-                    : "Non-Compliant"}
+                  {result.compliance_passed ? "Compliant" : "Non-Compliant"}
                 </p>
               </div>
 
@@ -196,12 +205,11 @@ Language: ${language.toUpperCase()}
                   <>
                     <video src={result.video_url} controls />
 
-                    <br />
                     <button
                       style={{
                         marginTop: "15px",
                         background: "#4caf50",
-                        color: "white"
+                        color: "white",
                       }}
                       onClick={downloadVideo}
                     >

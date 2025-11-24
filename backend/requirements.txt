@@ -2,7 +2,8 @@ fastapi==0.110.0
 uvicorn[standard]==0.30.0
 requests==2.31.0
 python-dotenv==1.0.0
-pydantic==2.6.1
+pydantic==2.5.3
+pydantic-core==2.14.6
 aiofiles==23.2.1
 python-multipart==0.0.6
 starlette==0.36.3

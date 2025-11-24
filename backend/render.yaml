@@ -1,6 +1,11 @@
-buildCommand: |
-  apt-get update
-  apt-get install -y ffmpeg
-  pip install -r requirements.txt
-
-startCommand: uvicorn backend.main:app --host 0.0.0.0 --port 10000
+services:
+  - type: web
+    name: medtech-ai
+    runtime: python
+    buildCommand: |
+      apt-get update
+      apt-get install -y ffmpeg
+      pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port 10000
+    envVars:
+      PYTHON_VERSION: 3.12.2

@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from fastapi import Request
+from fastapi.responses import JSONResponse
+import traceback
 
 
 # =============================================
@@ -18,7 +21,7 @@ from fastapi.responses import FileResponse
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
-EDEN_API_KEY = os.getenv("EDEN_API_KEY")  # NEW — EdenAI TTS
+EDEN_API_KEY = os.getenv("EDEN_API_KEY")
 FFMPEG_PATH = os.getenv("FFMPEG_PATH", "/usr/bin/ffmpeg")
 
 if not GEMINI_API_KEY:
@@ -26,7 +29,7 @@ if not GEMINI_API_KEY:
 if not RUNWAY_API_KEY:
     print("⚠️ Missing RUNWAY_API_KEY")
 if not EDEN_API_KEY:
-    print("⚠️ Missing EDEN_API_KEY (Required for TTS)")
+    print("⚠️ Missing EDEN_API_KEY")
 
 
 # =============================================
@@ -44,6 +47,20 @@ app.add_middleware(
 
 temp_dir = tempfile.gettempdir()
 app.mount("/videos", StaticFiles(directory=temp_dir), name="videos")
+
+
+# ===================================================
+# 🔥 GLOBAL EXCEPTION HANDLER — must be right here
+# ===================================================
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print("\n❌ BACKEND CRASHED:")
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc)}
+    )
+# ===================================================
 
 
 # =============================================
@@ -86,7 +103,7 @@ Research:
 
     r = requests.post(url, json=body, headers=headers)
     if r.status_code != 200:
-        raise HTTPException(500, f"Gemini Error: {r.text}")
+        raise HTTPException(status_code=500, detail=f"Gemini Error: {r.text}")
 
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
@@ -139,7 +156,7 @@ def generate_gen2_video(prompt, key):
 
     r = requests.post(url, json=payload, headers=headers)
     if r.status_code != 200:
-        raise HTTPException(500, f"Runway Error: {r.text}")
+        raise HTTPException(status_code=500, detail=f"Runway Error: {r.text}")
 
     return r.json()["output"][0]["video"]
 
@@ -151,22 +168,19 @@ def generate_audio(script, eden_key):
     url = "https://api.edenai.run/v2/audio/text_to_speech"
 
     payload = {
-        "providers": "google",  # or "amazon", "microsoft", "ibm"
+        "providers": "google",
         "language": "en-US",
         "voice": "en-US-Neural2-D",
         "text": script,
         "audio_format": "mp3"
     }
 
-    headers = {
-        "Authorization": f"Bearer {eden_key}"
-    }
+    headers = {"Authorization": f"Bearer {eden_key}"}
 
     r = requests.post(url, json=payload, headers=headers)
     if r.status_code != 200:
-        raise HTTPException(500, f"EdenAI TTS Error: {r.text}")
+        raise HTTPException(status_code=500, detail=f"EdenAI TTS Error: {r.text}")
 
-    # Eden AI returns Base64 audio
     audio_b64 = r.json()["google"]["audio"]
     audio_bytes = base64.b64decode(audio_b64)
 
@@ -229,28 +243,18 @@ def ffmpeg_merge(video_url, audio_path, srt_path):
 def generate(data: RequestData):
 
     research = fetch_research(data.device_name)
-
-    script = generate_script(
-        data.device_name,
-        data.purpose,
-        research,
-        data.language,
-        GEMINI_API_KEY
-    )
-
+    script = generate_script(data.device_name, data.purpose, research, data.language, GEMINI_API_KEY)
     compliance = validate_compliance(script, research, GEMINI_API_KEY)
 
     video_url = generate_gen2_video(script, RUNWAY_API_KEY)
     audio_path = generate_audio(script, EDEN_API_KEY)
     srt_path = create_srt(script)
-
     final_video = ffmpeg_merge(video_url, audio_path, srt_path)
 
     hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
     public_url = (
         f"https://{hostname}/videos/{os.path.basename(final_video)}"
-        if hostname
-        else f"/videos/{os.path.basename(final_video)}"
+        if hostname else f"/videos/{os.path.basename(final_video)}"
     )
 
     return {

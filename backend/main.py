@@ -1,5 +1,8 @@
 import os
+import uuid
+import base64
 import tempfile
+import subprocess
 import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -9,23 +12,26 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import Optional
 
-# ================================
+# =====================================
 # Load environment variables
-# ================================
+# =====================================
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
+GOOGLE_TTS_KEY = os.getenv("GOOGLE_TTS_KEY")
+FFMPEG_PATH = os.getenv("FFMPEG_PATH", "/usr/bin/ffmpeg")
 
 if not GEMINI_API_KEY:
-    print("⚠️  GEMINI_API_KEY not set — please supply via .env or frontend.")
-
+    print("⚠️ Missing GEMINI_API_KEY")
 if not RUNWAY_API_KEY:
-    print("⚠️  RUNWAY_API_KEY not set — video generation will fail.")
+    print("⚠️ Missing RUNWAY_API_KEY")
+if not GOOGLE_TTS_KEY:
+    print("⚠️ Missing GOOGLE_TTS_KEY")
 
-# ================================
-# FastAPI app setup
-# ================================
-app = FastAPI(title="MedTech AI Content Generator API")
+# =====================================
+# FastAPI Setup
+# =====================================
+app = FastAPI(title="MedTech AI Generator API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,170 +41,221 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ================================
-# Serve temporary directory for assets
-# ================================
 temp_dir = tempfile.gettempdir()
 app.mount("/videos", StaticFiles(directory=temp_dir), name="videos")
 
-# ================================
-# Request schema
-# ================================
+# =====================================
+# Data Model
+# =====================================
 class RequestData(BaseModel):
     device_name: str
     purpose: str
     language: str = "en"
-    gemini_api_key: Optional[str] = None
-    runway_api_key: Optional[str] = None
 
 
-# ================================
-# STEP 1: Research (placeholder)
-# ================================
-def fetch_research(device_name: str) -> str:
-    return (
-        f"Research summary for {device_name}: invented in the 20th century, "
-        f"FDA-cleared, and widely used globally."
-    )
+# =====================================
+# STEP 1 — Fetch Research
+# =====================================
+def fetch_research(device_name: str):
+    return f"Research summary for {device_name}: widely used and medically approved."
 
 
-# ================================
-# STEP 2: Gemini Script Generation
-# ================================
-def generate_script(device_name: str, purpose: str, research: str, language: str, gemini_key: str) -> str:
+# =====================================
+# STEP 2 — Gemini Script
+# =====================================
+def generate_script(device, purpose, research, language, key):
     prompt = f"""
-Write a story-style narration for a {purpose}-focused explainer about the medical device: {device_name}.
-
-Guidelines:
-- Start directly with the device (no greetings)
-- Storytelling/documentary tone
-- Include:
-  * When and where it was invented
-  * How it was invented
-  * Surprising facts
-  * Where it is used today
-  * How it works (technical explanation)
-  * Benefits and outcomes
-  * Safety considerations
+Write a documentary-style narration for a {purpose}-focused explainer about the medical device {device}.
+Include:
+- Origin
+- When/where invented
+- How it works
+- Surprising facts
+- Safety
+Length ~ 70 seconds.
 Language: {language}
-Length: about 60–90 seconds of narration.
-
-Research summary:
+Research:
 {research}
 """
+
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {gemini_key}",
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     body = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    try:
-        r = requests.post(url, headers=headers, json=body, timeout=60)
-        if r.status_code != 200:
-            raise HTTPException(status_code=500, detail=f"Gemini API error: {r.status_code} {r.text}")
-        data = r.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Gemini script generation failed: {str(e)}")
+    r = requests.post(url, json=body, headers=headers)
+    if r.status_code != 200:
+        raise HTTPException(500, f"Gemini Error: {r.text}")
+
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 
-# ================================
-# STEP 3: Compliance Validation
-# ================================
-def validate_compliance(script: str, research: str, gemini_key: str) -> bool:
+# =====================================
+# STEP 3 — Compliance Check
+# =====================================
+def validate_compliance(script, research, key):
     prompt = f"""
-Compare this script with the research summary.
-Respond ONLY with 'YES' if compliant, 'NO' if unsupported claims.
-If unsure, respond 'YES'.
+Compare script with research.
+Respond ONLY YES or NO.
+If unsure → YES.
 
 Research:
 {research}
-
 Script:
 {script}
 """
+
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {gemini_key}",
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
     body = {"contents": [{"parts": [{"text": prompt}]}]}
 
+    r = requests.post(url, json=body, headers=headers)
     try:
-        r = requests.post(url, headers=headers, json=body, timeout=45)
-        if r.status_code != 200:
-            print(f"⚠️ Compliance check API error: {r.text}")
-            return True
-        data = r.json()
-        result = data["candidates"][0]["content"]["parts"][0]["text"].strip().lower()
+        result = r.json()["candidates"][0]["content"]["parts"][0]["text"].lower()
         return "yes" in result
-    except Exception as e:
-        print(f"⚠️ Compliance validation failed: {e}")
+    except:
         return True
 
 
-# ================================
-# STEP 4: RunwayML Video Generation
-# ================================
-def generate_video_with_runway(script: str, runway_key: str) -> Optional[str]:
-    try:
-        url = "https://api.runwayml.com/v1/gen2/video"
-        headers = {
-            "Authorization": f"Bearer {runway_key}",
-            "Content-Type": "application/json",
-        }
-        body = {
-            "prompt": script,
-            "model": "gen2",
-            "duration": 10,
-            "ratio": "16:9"
-        }
+# =====================================
+# STEP 4 — Runway GEN-2 Silent Video
+# =====================================
+def generate_gen2_video(prompt, key):
+    url = "https://api.runwayml.com/v1/generate"
 
-        r = requests.post(url, headers=headers, json=body, timeout=60)
-        if r.status_code != 200:
-            print(f"⚠️ Runway video error: {r.text}")
-            return None
+    payload = {
+        "model": "gen2",
+        "prompt": prompt,
+        "num_frames": 200,
+        "fps": 20,
+        "resolution": "1080p"
+    }
 
-        data = r.json()
-        return data.get("output_url")
-    except Exception as e:
-        print(f"⚠️ Runway video generation failed: {e}")
-        return None
+    headers = {
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json"
+    }
+
+    r = requests.post(url, json=payload, headers=headers)
+    if r.status_code != 200:
+        raise HTTPException(500, f"Runway Error: {r.text}")
+
+    video_url = r.json()["output"][0]["video"]
+    return video_url
 
 
-# ================================
-# API Endpoint
-# ================================
+# =====================================
+# STEP 5 — Google TTS Audio
+# =====================================
+def generate_audio(script, key):
+    url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={key}"
+
+    body = {
+        "input": {"text": script},
+        "voice": {"languageCode": "en-US", "name": "en-US-Neural2-D"},
+        "audioConfig": {"audioEncoding": "mp3"}
+    }
+
+    r = requests.post(url, json=body)
+    if r.status_code != 200:
+        raise HTTPException(500, f"Google TTS Error: {r.text}")
+
+    audio_data = r.json()["audioContent"]
+    audio_bytes = base64.b64decode(audio_data)
+
+    audio_path = os.path.join(temp_dir, f"audio_{uuid.uuid4().hex}.mp3")
+    with open(audio_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return audio_path
+
+
+# =====================================
+# STEP 6 — Create SRT
+# =====================================
+def create_srt(script):
+    lines = script.split(". ")
+    srt = ""
+    current_time = 0
+
+    for i, line in enumerate(lines):
+        start = f"00:00:{current_time:02d},000"
+        end = f"00:00:{current_time+2:02d},000"
+        current_time += 2
+
+        srt += f"{i+1}\n{start} --> {end}\n{line}\n\n"
+
+    path = os.path.join(temp_dir, f"sub_{uuid.uuid4().hex}.srt")
+    with open(path, "w") as f:
+        f.write(srt)
+
+    return path
+
+
+# =====================================
+# STEP 7 — Merge with FFmpeg (Burn Subtitles)
+# =====================================
+def ffmpeg_merge(video_url, audio_path, srt_path):
+    raw_video_path = os.path.join(temp_dir, f"vid_{uuid.uuid4().hex}.mp4")
+
+    video_bytes = requests.get(video_url).content
+    with open(raw_video_path, "wb") as f:
+        f.write(video_bytes)
+
+    final_path = os.path.join(temp_dir, f"final_{uuid.uuid4().hex}.mp4")
+
+    cmd = [
+        FFMPEG_PATH,
+        "-i", raw_video_path,
+        "-i", audio_path,
+        "-vf", f"subtitles='{srt_path}'",
+        "-c:v", "libx264",
+        "-c:a", "aac",
+        "-shortest",
+        final_path
+    ]
+
+    subprocess.run(cmd, check=True)
+    return final_path
+
+
+# =====================================
+# API Route
+# =====================================
 @app.post("/generate")
-def generate_content(data: RequestData):
-    gemini_key = data.gemini_api_key or GEMINI_API_KEY
-    runway_key = data.runway_api_key or RUNWAY_API_KEY
+def generate(data: RequestData):
+    script = generate_script(
+        data.device_name,
+        data.purpose,
+        fetch_research(data.device_name),
+        data.language,
+        GEMINI_API_KEY
+    )
 
-    if not gemini_key:
-        raise HTTPException(status_code=400, detail="Missing Gemini API key.")
+    compliance = validate_compliance(script, fetch_research(data.device_name), GEMINI_API_KEY)
 
-    research = fetch_research(data.device_name)
-    script = generate_script(data.device_name, data.purpose, research, data.language, gemini_key)
-    compliance = validate_compliance(script, research, gemini_key)
+    video_url = generate_gen2_video(script, RUNWAY_API_KEY)
+    audio_path = generate_audio(script, GOOGLE_TTS_KEY)
+    srt_path = create_srt(script)
 
-    video_url = None
-    if runway_key:
-        video_url = generate_video_with_runway(script, runway_key)
+    final_video = ffmpeg_merge(video_url, audio_path, srt_path)
+
+    hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    public_url = (
+        f"https://{hostname}/videos/{os.path.basename(final_video)}"
+        if hostname
+        else f"/videos/{os.path.basename(final_video)}"
+    )
 
     return {
-        "device": data.device_name,
-        "purpose": data.purpose,
         "script": script,
         "compliance_passed": compliance,
-        "research_used": research,
-        "video_url": video_url,
+        "video_url": public_url
     }
 
 
-# ================================
-# Serve frontend (if exists)
-# ================================
+# =====================================
+# Optional: Serve Frontend
+# =====================================
 frontend_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 if os.path.isdir(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")

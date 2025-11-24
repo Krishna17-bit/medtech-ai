@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import axios from "axios";
 import "./App.css";
 
@@ -6,11 +6,31 @@ function App() {
   const [deviceName, setDeviceName] = useState("");
   const [purpose, setPurpose] = useState("training");
   const [language, setLanguage] = useState("en");
-  const [geminiKey, setGeminiKey] = useState("");
-  const [runwayKey, setRunwayKey] = useState("");
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [result, setResult] = useState(null);
+
+  // ============= Progress Bar Animation =============
+  useEffect(() => {
+    let interval = null;
+
+    if (loading) {
+      setProgress(5); // start at 5%
+
+      interval = setInterval(() => {
+        setProgress((old) => {
+          if (old >= 90) return old; // wait for backend
+          return old + Math.floor(Math.random() * 10) + 1;
+        });
+      }, 700);
+    } else {
+      setProgress(100);
+      setTimeout(() => setProgress(0), 800);
+    }
+
+    return () => clearInterval(interval);
+  }, [loading]);
 
   // Generate prompt template
   const generatePrompt = () => {
@@ -28,10 +48,6 @@ Language: ${language.toUpperCase()}
   // Handle generation
   const handleGenerate = async () => {
     if (!deviceName) return alert("Please enter a device name");
-    if (!geminiKey)
-      return alert("Please enter Gemini API key");
-    if (!runwayKey)
-      return alert("Please enter Runway API key");
 
     const promptText = prompt || generatePrompt();
     setPrompt(promptText);
@@ -42,18 +58,26 @@ Language: ${language.toUpperCase()}
       const res = await axios.post("http://127.0.0.1:8000/generate", {
         device_name: deviceName,
         purpose,
-        language,
-        gemini_api_key: geminiKey,
-        runway_api_key: runwayKey,
+        language
       });
 
       setResult(res.data);
     } catch (err) {
       console.error(err);
-      alert("Error generating content. Check backend console or API keys.");
+      alert("Error generating content. Check backend logs.");
     } finally {
       setLoading(false);
     }
+  };
+
+  // Download generated video
+  const downloadVideo = () => {
+    if (!result?.video_url) return;
+
+    const link = document.createElement("a");
+    link.href = result.video_url;
+    link.download = `${deviceName.replace(/\s+/g, "_")}_video.mp4`;
+    link.click();
   };
 
   return (
@@ -72,7 +96,7 @@ Language: ${language.toUpperCase()}
         </nav>
       </aside>
 
-      {/* Main Content */}
+      {/* Main */}
       <main className="main-content">
         <header className="dashboard-header">
           <h1>
@@ -81,27 +105,10 @@ Language: ${language.toUpperCase()}
           <div className="badge">Powered by Gemini & Runway</div>
         </header>
 
-        {/* Generator Card */}
         <div id="root-card">
           <h2 className="section-title">AI Content Generator</h2>
 
-          {/* API Keys */}
-          <div className="controls">
-            <input
-              type="password"
-              placeholder="Enter Gemini API Key"
-              value={geminiKey}
-              onChange={(e) => setGeminiKey(e.target.value)}
-            />
-            <input
-              type="password"
-              placeholder="Enter Runway API Key"
-              value={runwayKey}
-              onChange={(e) => setRunwayKey(e.target.value)}
-            />
-          </div>
-
-          {/* Device and Settings */}
+          {/* Inputs */}
           <div className="controls">
             <input
               type="text"
@@ -131,7 +138,7 @@ Language: ${language.toUpperCase()}
             </select>
           </div>
 
-          {/* Prompt Box */}
+          {/* Prompt */}
           <div className="prompt-editor">
             <textarea
               placeholder="View or edit the AI prompt here..."
@@ -139,6 +146,16 @@ Language: ${language.toUpperCase()}
               onChange={(e) => setPrompt(e.target.value)}
             />
           </div>
+
+          {/* Progress Bar */}
+          {loading && (
+            <div className="progress-container">
+              <div
+                className="progress-bar"
+                style={{ width: `${progress}%` }}
+              ></div>
+            </div>
+          )}
 
           <button onClick={handleGenerate} disabled={loading}>
             {loading ? "Generating..." : "Generate"}
@@ -174,8 +191,23 @@ Language: ${language.toUpperCase()}
 
               <div className="section video">
                 <h2>Generated Video</h2>
+
                 {result.video_url ? (
-                  <video src={result.video_url} width="100%" controls />
+                  <>
+                    <video src={result.video_url} controls />
+
+                    <br />
+                    <button
+                      style={{
+                        marginTop: "15px",
+                        background: "#4caf50",
+                        color: "white"
+                      }}
+                      onClick={downloadVideo}
+                    >
+                      Download Video
+                    </button>
+                  </>
                 ) : (
                   <p>No video generated</p>
                 )}

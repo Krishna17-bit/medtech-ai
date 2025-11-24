@@ -258,3 +258,17 @@ def generate(data: RequestData):
         "compliance_passed": compliance,
         "video_url": public_url
     }
+
+# =============================================
+# Serve Frontend (Vite build)
+# =============================================
+frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
+
+if os.path.isdir(frontend_path):
+    app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
+
+    @app.get("/")
+    def serve_index():
+        return FileResponse(os.path.join(frontend_path, "index.html"))
+else:
+    print("❌ FRONTEND DIST NOT FOUND AT:", frontend_path)

@@ -1,6 +1,10 @@
 services:
   - type: web
+<<<<<<< HEAD
     name: medtech-ai
+=======
+    name: medtech-backend
+>>>>>>> 01af1829cdd630b53666104436f47e3e9da14f41
     env: python
     buildCommand: |
       cd backend
@@ -8,6 +12,7 @@ services:
       cd ../frontend
       npm install
       npm run build
+<<<<<<< HEAD
       mkdir -p ../backend/frontend/dist
       cp -r dist/* ../backend/frontend/dist/
     startCommand: |
@@ -15,3 +20,9 @@ services:
       uvicorn main:app --host 0.0.0.0 --port $PORT
     envVars:
       PYTHON_VERSION: 3.12.2
+=======
+    startCommand: |
+      cd backend
+      uvicorn main:app --host 0.0.0.0 --port $PORT
+    staticPublishPath: frontend/dist
+>>>>>>> 01af1829cdd630b53666104436f47e3e9da14f41

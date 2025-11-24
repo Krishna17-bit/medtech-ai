@@ -262,14 +262,13 @@ def generate(data: RequestData):
 # =============================================
 # Serve Frontend (Vite build)
 # =============================================
-frontend_path = os.path.join(os.getcwd(), "frontend", "dist")
+frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
+
+print("Frontend path resolved to:", frontend_path)
 
 if os.path.isdir(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
-
-    @app.get("/")
-    def serve_index():
-        return FileResponse(os.path.join(frontend_path, "index.html"))
 else:
     print("❌ FRONTEND DIST NOT FOUND AT:", frontend_path)
+
 

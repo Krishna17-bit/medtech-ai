@@ -1,23 +1,23 @@
 import os
+import time
 import uuid
-import base64
 import tempfile
-import subprocess
-import requests
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from dotenv import load_dotenv
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from fastapi import Request
 from fastapi.responses import JSONResponse
 import traceback
+from pydantic import BaseModel
+from dotenv import load_dotenv
 
+from google import genai
+from google.genai import types
 
-# =============================================
-# Load environment variables
-# =============================================
+# ======================================
+# Load API Key
+# ======================================
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 RUNWAY_API_KEY = os.getenv("RUNWAY_API_KEY")
@@ -30,12 +30,11 @@ if not RUNWAY_API_KEY:
     print("⚠️ Missing RUNWAY_API_KEY")
 if not EDEN_API_KEY:
     print("⚠️ Missing EDEN_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
+client = genai.Client(api_key=GOOGLE_API_KEY)
 
-# =============================================
-# FastAPI Setup
-# =============================================
-app = FastAPI(title="MedTech AI Generator API")
+app = FastAPI(title="MedTech AI (Gemini + VEO3)")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,9 +48,7 @@ temp_dir = tempfile.gettempdir()
 app.mount("/videos", StaticFiles(directory=temp_dir), name="videos")
 
 
-# ===================================================
-# 🔥 GLOBAL EXCEPTION HANDLER — must be right here
-# ===================================================
+# GLOBAL EXCEPTION HANDLER — must be right here
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     print("\n❌ BACKEND CRASHED:")
@@ -63,38 +60,25 @@ async def global_exception_handler(request: Request, exc: Exception):
 # ===================================================
 
 
-# =============================================
+
 # Input Model
-# =============================================
+
+# Request Model
 class RequestData(BaseModel):
     device_name: str
     purpose: str
     language: str = "en"
 
 
-# =============================================
-# STEP 1 — Fetch Research
-# =============================================
-def fetch_research(device_name: str):
-    return f"Research summary for {device_name}: widely used and medically approved."
-
-
-# =============================================
-# STEP 2 — Gemini Script Generation
-# =============================================
-def generate_script(device, purpose, research, language, key):
+# ======================================
+# Step 1 — Gemini Script Generator
+# ======================================
+def generate_script(device, purpose, lang):
     prompt = f"""
-Write a documentary-style narration for a {purpose}-focused explainer about the medical device {device}.
-Include:
-- Origin
-- When/where invented
-- How it works
-- Surprising facts
-- Safety
-Length ~ 70 seconds.
-Language: {language}
-Research:
-{research}
+Write a 60-second medical explainer script about "{device}" 
+for the purpose "{purpose}".
+Tone: educational, simple.
+Language: {lang}.
 """
 
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent"
@@ -106,40 +90,40 @@ Research:
         raise HTTPException(status_code=500, detail=f"Gemini Error: {r.text}")
 
     return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
+    return response.text
 
 
-# =============================================
-# STEP 3 — Compliance Check
-# =============================================
-def validate_compliance(script, research, key):
-    prompt = f"""
-Compare script with research.
-Respond ONLY YES or NO.
-If unsure → YES.
+# ======================================
+# Step 2 — VEO 3.1 Video + Audio Generation
+# ======================================
+def generate_video_with_audio(prompt_text):
 
-Research:
-{research}
-Script:
-{script}
-"""
+    operation = client.models.generate_videos(
+        model="veo-3.1-generate-preview",
+        prompt=prompt_text,
+        config=types.GenerateVideosConfig(
+            duration_seconds=8
+        )
+    )
 
-    url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro-latest:generateContent"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {key}"}
-    body = {"contents": [{"parts": [{"text": prompt}]}]}
+    # Poll slowly to avoid 429
+    while not operation.done:
+        print("⏳ Waiting for VEO... (poll every 15s)")
+        time.sleep(15)
+        operation = client.operations.get(operation.name)
 
-    r = requests.post(url, json=body, headers=headers)
-    try:
-        result = r.json()["candidates"][0]["content"]["parts"][0]["text"].lower()
-        return "yes" in result
-    except:
-        return True
+    result = operation.response.generated_videos[0]
+    video_file = result.video
 
+    output_path = os.path.join(temp_dir, f"veo_{uuid.uuid4().hex}.mp4")
+    client.files.download(video_file)
+    video_file.save(output_path)
 
-# =============================================
-# STEP 4 — Runway GEN-2 Silent Video
-# =============================================
-def generate_gen2_video(prompt, key):
-    url = "https://api.runwayml.com/v1/generate"
+    return output_path
 
     payload = {
         "model": "gen2",
@@ -255,13 +239,24 @@ def generate(data: RequestData):
     public_url = (
         f"https://{hostname}/videos/{os.path.basename(final_video)}"
         if hostname else f"/videos/{os.path.basename(final_video)}"
+=======
+# ======================================
+# Main Route
+# ======================================
+@app.post("/generate")
+def generate(data: RequestData):
+
+    script = generate_script(data.device_name, data.purpose, data.language)
+    video_path = generate_video_with_audio(script)
+
+    hostname = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+    video_url = (
+        f"https://{hostname}/videos/{os.path.basename(video_path)}"
+        if hostname
+        else f"/videos/{os.path.basename(video_path)}"
     )
 
-    return {
-        "script": script,
-        "compliance_passed": compliance,
-        "video_url": public_url
-    }
+    return {"script": script, "video_url": video_url}
 
 # =============================================
 # Serve Frontend (Vite build)
@@ -272,6 +267,12 @@ frontend_path = os.path.abspath(
 
 print("Frontend path resolved to:", frontend_path)
 
+
+# Frontend
+frontend_path = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../frontend/dist")
+)
+
 if os.path.isdir(frontend_path):
     app.mount("/", StaticFiles(directory=frontend_path, html=True), name="frontend")
 
@@ -280,5 +281,3 @@ if os.path.isdir(frontend_path):
         return FileResponse(os.path.join(frontend_path, "index.html"))
 else:
     print("❌ FRONTEND DIST NOT FOUND AT:", frontend_path)
-
-
